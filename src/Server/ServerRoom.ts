@@ -27,6 +27,7 @@ export class Board {
 }
 
 export class ServerRoom extends Room<RoomState> {
+    leftRoomPlayers: number[] = [];
     playernum = 0;
     turnPlayer = 0;
     hasStarted = false;
@@ -278,6 +279,11 @@ export class ServerRoom extends Room<RoomState> {
         }
         this.turnPlayer++;
         this.turnPlayer = this.turnPlayer % ServerRoom.numberToStart;
+
+        if(this.leftRoomPlayers.includes(this.turnPlayer)){
+            // move by ai!
+
+        }
         this.broadcast("moveAccepted", {boards: this.serverBoards, turnPlayer: this.turnPlayer});
         this.checkForEnd();
         return;
@@ -373,6 +379,14 @@ export class ServerRoom extends Room<RoomState> {
 
 
     onLeave(client: Client) {
+        const playerState = this.state.playerStates.get(client.sessionId);
+        const playerID = playerState.playerId;
+        if(!this.leftRoomPlayers.includes(playerID)) {
+            console.warn("Player " + playerID + " left room")
+            this.leftRoomPlayers.push(playerID);
+        }else{
+            console.warn("Player " + playerID + " has already left room")
+        }
         this.state.playerStates.delete(client.sessionId);
         this.playernum--;
     }

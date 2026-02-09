@@ -15,7 +15,8 @@ export default Arena({
         /**
          * Define your room handlers:
          */
-        gameServer.define('ringtactoe', ServerRoom);
+        gameServer.define('ringtactoe-flow', ServerRoom);
+        gameServer.define('ringtactoe-replace', ServerRoom);
 
         console.log("BOOT:", new Date().toISOString());
     },
