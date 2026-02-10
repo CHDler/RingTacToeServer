@@ -51,6 +51,8 @@ export class ServerRoom extends Room<RoomState> {
         this.serverBoards = Array.from({length: this.BOARD_COUNT}, (_, i) =>
             Board.create(this.KEY_COUNT, this.colors[i] ?? "")
         );
+        this.isFlowMode = this.roomName === "ringtactoe-flow";
+        console.log("this room is flow? "+ this.isFlowMode)
     }
 
     onJoin(client: Client) {
