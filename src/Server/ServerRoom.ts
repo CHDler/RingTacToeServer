@@ -5,9 +5,9 @@ import {cli} from "@colyseus/loadtest";
 type MoveMsg = {
     boardIndex: number;
     boardKeyIndex: number;
-    rotateSteps: number[];
-    rotateDirections: number[];
-    rotateBoardIndices: number[];
+    rotateStep: number;
+    rotateDirection: number;
+    rotateBoardIndex: number;
 };
 
 export class Board {
@@ -37,6 +37,7 @@ export class ServerRoom extends Room<RoomState> {
     colors = ["Blue", "Red", "Green"]
     static readonly numberToStart: number = 3;
     public isFlowMode = false;
+    currentMove: MoveMsg | null = null;
 
     onCreate() {
         this.maxClients = ServerRoom.numberToStart;
@@ -44,7 +45,7 @@ export class ServerRoom extends Room<RoomState> {
         console.log("start room lolol!");
         this.clock.setInterval(() => {
             this.state.tick++;
-        }, 50);
+        }, 10);
         this.onMessage("confirmMove", (client, data: any) => {
             this.onMove(client, data);
         })
@@ -52,14 +53,27 @@ export class ServerRoom extends Room<RoomState> {
             Board.create(this.KEY_COUNT, this.colors[i] ?? "")
         );
         this.isFlowMode = this.roomName === "ringtactoe-flow";
-        console.log("this room is flow? "+ this.isFlowMode)
+        this.currentMove = {
+            boardIndex: -1,
+            boardKeyIndex: -1,
+            rotateStep: 0,
+            rotateDirection: 0,
+            rotateBoardIndex: -1,
+        }
+        console.log("this room is flow? " + this.isFlowMode)
     }
 
-    onJoin(client: Client) {
+    onJoin(client: Client,options: any) {
         this.state.playerStates.set(client.sessionId, new PlayerState());
-        var s = this.state.playerStates.get(client.sessionId);
+        const s = this.state.playerStates.get(client.sessionId);
         s.playerId = this.playernum;
         this.playernum++;
+        const rawName = options?.name ?? "";
+        const useWXInfo = Boolean(options?.useWXInfo);
+
+        const name = rawName.toString().slice(0, 24);
+        s.playerName = rawName;
+        s.useWXName = useWXInfo;
 
         if (this.checkForStart()) {
             console.log("start game lolol");
@@ -79,12 +93,12 @@ export class ServerRoom extends Room<RoomState> {
 
             return;
         }
-        const msg = data as MoveMsg;
-        const boardIndex = msg.boardIndex;
-        const boardKeyIndex = msg.boardKeyIndex;
-        const rotateSteps: number[] = Array.isArray(msg.rotateSteps) ? msg.rotateSteps : [];
-        const rotateDirections: number[] = Array.isArray(msg.rotateDirections) ? msg.rotateDirections : [];
-        const rotateBoardIndices: number[] = Array.isArray(msg.rotateBoardIndices) ? msg.rotateBoardIndices : [];
+        this.currentMove = data as MoveMsg;
+        const boardIndex = this.currentMove.boardIndex;
+        const boardKeyIndex = this.currentMove.boardKeyIndex;
+        const rotateStep = this.currentMove.rotateStep;
+        const rotateDirection = this.currentMove.rotateDirection;
+        const rotateBoardIndex = this.currentMove.rotateBoardIndex;
 
         if (boardIndex >= this.serverBoards.length || boardKeyIndex < 0) {
             console.log("no boards found for player " + boardKeyIndex);
@@ -112,10 +126,10 @@ export class ServerRoom extends Room<RoomState> {
         }
         key.isEmpty = false;
         key.playerId = player.playerId;
-        const greenBoard = this.serverBoards[2];
-        const redBoard = this.serverBoards[1];
-        const blueBoard = this.serverBoards[0];
 
+        const blueBoard = this.serverBoards[0];
+        const redBoard = this.serverBoards[1];
+        const greenBoard = this.serverBoards[2];
 
         if (this.isFlowMode) {
             switch (boardIndex) {
@@ -196,46 +210,40 @@ export class ServerRoom extends Room<RoomState> {
         // read rotation:
 
         {
-            console.log("this time we have " + rotateDirections.length + " rotation ")
-            if (rotateDirections.length !== rotateSteps.length || rotateDirections.length !== rotateBoardIndices.length) {
-                client.send("moveRejected", {reason: "rotations are not matched! " + rotateBoardIndices.length + " " + rotateDirections.length + " " + rotateBoardIndices.length});
+            const mod = (a: number, n: number) => ((a % n) + n) % n;
+            const step = rotateStep;
+            const dir = rotateDirection;  // 建议约定：dir = +1 / -1
+            console.log("rotation step " + step + " with dir " + dir + " at board " + rotateBoardIndex)
+            if (rotateBoardIndex >= this.serverBoards.length) {
+                client.send("moveRejected", {reason: `invalid rotateBoardIndex: ${rotateBoardIndex}`});
                 return;
             }
-            const mod = (a: number, n: number) => ((a % n) + n) % n;
-
-            for (let r = 0; r < rotateSteps.length; r++) {
-                const step = Number(rotateSteps[r]) || 0;
-                const dir = Number(rotateDirections[r]) || 0;   // 建议约定：dir = +1 / -1
-                const bIdx = Number(rotateBoardIndices[r]);
-                console.log("rotation step " + step + " with dir " + dir + " at board " + bIdx)
-                if (bIdx < 0 || bIdx >= this.serverBoards.length) {
-                    client.send("moveRejected", {reason: `invalid rotateBoardIndex: ${bIdx}`});
+            if (rotateBoardIndex !== -1) {
+                const board = this.serverBoards[rotateBoardIndex];
+                const keys = board.keys;
+                const n = keys.length;
+                if (n === 0) {
+                    console.error("the board " + boardKeyIndex + " has no keys!");
                     return;
                 }
 
-
-                const board = this.serverBoards[bIdx];
-                const keys = board.keys;
-                const n = keys.length;
-                if (n === 0) continue;
-
                 const old = keys.map(k => ({isEmpty: k.isEmpty, playerId: k.playerId}));
                 const shift = mod(step * dir, n);
-                console.log("rotate boardIndex", bIdx, "dir", dir, "step", step);
+                console.log("rotate boardIndex", rotateBoardIndex, "dir", dir, "step", step);
 
                 for (let i = 0; i < n; i++) {
                     const src = mod(i - shift, n);
                     keys[i].isEmpty = old[src].isEmpty;
                     keys[i].playerId = old[src].playerId;
                 }
-                
+
 
                 //全色 红盘 2 绿盘 0 蓝盘 4
                 //绿蓝 绿盘 1 蓝盘 3
                 //红蓝 红盘 1 蓝盘 5
                 //红绿 红盘 3 绿盘 5
                 if (this.isFlowMode) {
-                    switch (bIdx) {
+                    switch (rotateBoardIndex) {
                         case 0:
                             //蓝色转盘
                             console.log("Special casse blue");
@@ -251,7 +259,6 @@ export class ServerRoom extends Room<RoomState> {
                         case 1 :
                             //红色转盘
                             console.log("Special casse red");
-
                             greenBoard.keys[5].isEmpty = redBoard.keys[3].isEmpty;
                             greenBoard.keys[5].playerId = redBoard.keys[3].playerId;
                             blueBoard.keys[5].isEmpty = redBoard.keys[1].isEmpty;
@@ -274,6 +281,7 @@ export class ServerRoom extends Room<RoomState> {
                             blueBoard.keys[4].playerId = greenBoard.keys[0].playerId;
                     }
 
+
                 }
             }
 
@@ -282,11 +290,15 @@ export class ServerRoom extends Room<RoomState> {
         this.turnPlayer++;
         this.turnPlayer = this.turnPlayer % ServerRoom.numberToStart;
 
-        if(this.leftRoomPlayers.includes(this.turnPlayer)){
+        if (this.leftRoomPlayers.includes(this.turnPlayer)) {
             // move by ai!
 
         }
-        this.broadcast("moveAccepted", {boards: this.serverBoards, turnPlayer: this.turnPlayer});
+        this.broadcast("moveAccepted", {
+            boards: this.serverBoards,
+            turnPlayer: this.turnPlayer,
+            moveMsg: this.currentMove
+        });
         this.checkForEnd();
         return;
     }
@@ -294,13 +306,14 @@ export class ServerRoom extends Room<RoomState> {
     assignRandomOrderAndStart() {
         const ids = this.clients.map(c => c.sessionId); // 当前在线玩家（最稳）
         this.shuffleInPlace(ids);
-
         for (let i = 0; i < ids.length; i++) {
             const s = this.state.playerStates.get(ids[i]);
             if (s) {
                 s.playerOrder = i; // 0=先手, 1=后手...
                 s.playerId = i; // 让玩家游戏内id 跟玩家order一致，更加直观
-                s.playerName = i.toString(); //TODO: 使用玩家名称
+                if(!s.useWXName){
+                    s.playerName = "玩家"+i.toString();
+                }
             }
         }
         this.turnPlayer = 0;      // 轮到 order=0 的玩家
@@ -354,20 +367,18 @@ export class ServerRoom extends Room<RoomState> {
                 const keyOne = keys[indexOne];
                 const keyTwo = keys[indexTwo];
                 const keyThree = keys[indexThree];
-                const boardIndex = i;
-
                 if (!keyOne.isEmpty && !keyTwo.isEmpty && !keyThree.isEmpty) {
                     if (keyOne.playerId === keyTwo.playerId && keyTwo.playerId === keyThree.playerId) {
-                            console.log("this player has won " + keyOne.playerId);
-                            if (!winners.includes(keyOne.playerId)) {
-                                winners.push(keyOne.playerId);
-                            }
+                        console.log("this player has won " + keyOne.playerId);
+                        if (!winners.includes(keyOne.playerId)) {
+                            winners.push(keyOne.playerId);
                         }
-                    } else if (keyOne.isEmpty) {
-                        allFilled = false;
                     }
+                } else if (keyOne.isEmpty) {
+                    allFilled = false;
                 }
             }
+        }
 
         if (winners.length === 1) {
             winner = winners[0];
@@ -383,10 +394,10 @@ export class ServerRoom extends Room<RoomState> {
     onLeave(client: Client) {
         const playerState = this.state.playerStates.get(client.sessionId);
         const playerID = playerState.playerId;
-        if(!this.leftRoomPlayers.includes(playerID)) {
+        if (!this.leftRoomPlayers.includes(playerID)) {
             console.warn("Player " + playerID + " left room")
             this.leftRoomPlayers.push(playerID);
-        }else{
+        } else {
             console.warn("Player " + playerID + " has already left room")
         }
         this.state.playerStates.delete(client.sessionId);

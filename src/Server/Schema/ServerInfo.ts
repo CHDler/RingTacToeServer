@@ -13,12 +13,12 @@ export class PlayerState extends Schema {
     @type("int8") playerId = 0;
     @type("string") playerName = "";
     @type("int8") playerOrder = -1;
+    @type("boolean") useWXName = false;
 }
 
 export class RoomState extends Schema {
     @type({ map: PlayerState }) playerStates = new MapSchema<PlayerState>();
     @type("int32") tick = 0;
-
 }
 
 
