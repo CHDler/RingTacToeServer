@@ -292,14 +292,14 @@ export class ServerRoom extends Room<RoomState> {
 
         if (this.leftRoomPlayers.includes(this.turnPlayer)) {
             // move by ai!
-
         }
+
+        this.checkForEnd()
         this.broadcast("moveAccepted", {
             boards: this.serverBoards,
             turnPlayer: this.turnPlayer,
             moveMsg: this.currentMove
         });
-        this.checkForEnd();
         return;
     }
 
@@ -352,7 +352,7 @@ export class ServerRoom extends Room<RoomState> {
         }
     }
 
-    checkForEnd() {
+    checkForEnd(): boolean {
         let allFilled = true;
         const winners: number[] = [];
         let hasTied = false;
@@ -378,6 +378,7 @@ export class ServerRoom extends Room<RoomState> {
                     allFilled = false;
                 }
             }
+
         }
 
         if (winners.length === 1) {
@@ -388,6 +389,7 @@ export class ServerRoom extends Room<RoomState> {
         if (hasTied || hasWon) {
             this.broadcast("endGame", {winnerID: winner, tied: hasTied, won: hasWon})
         }
+        return hasTied || hasWon ;
     }
 
 
