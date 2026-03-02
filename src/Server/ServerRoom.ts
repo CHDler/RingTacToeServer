@@ -27,6 +27,7 @@ export class Board {
 }
 
 export class ServerRoom extends Room<RoomState> {
+    seatReservationTimeout = 60;
     leftRoomPlayers: number[] = [];
     playernum = 0;
     turnPlayer = 0;
@@ -428,7 +429,3 @@ export class ServerRoom extends Room<RoomState> {
         }
     }
 }
-
-
-
-
