@@ -5,7 +5,7 @@ import { monitor } from "@colyseus/monitor";
 /**
  * Import your Room files
  */
-import { ServerRoom} from "./Server/ServerRoom"
+import { ServerRoom } from "./Server/ServerRoom"
 
 
 export default Arena({
@@ -17,6 +17,7 @@ export default Arena({
          */
         gameServer.define('ringtactoe-replace', ServerRoom);
         gameServer.define('ringtactoe-flow', ServerRoom);
+        gameServer.define('ringtactoe-flow-2', ServerRoom);
 
 
         console.log("BOOT:", new Date().toISOString());

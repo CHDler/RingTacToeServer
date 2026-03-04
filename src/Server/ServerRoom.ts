@@ -49,6 +49,7 @@ export class ServerRoom extends Room<RoomState> {
     leftRoomPlayers: number[] = [];
     playernum = 0;
     turnPlayer = 0;
+    playerToStart = 3;
     hasStarted = false;
 
     BOARD_COUNT = 3;
@@ -56,7 +57,6 @@ export class ServerRoom extends Room<RoomState> {
     serverBoards: Board[] = [];
     colors = ["Blue", "Red", "Green"];
 
-    static readonly numberToStart: number = 3;
 
     public isFlowMode = false;
     currentMove: MoveMsg | null = null;
@@ -128,20 +128,22 @@ export class ServerRoom extends Room<RoomState> {
                         where: `onMessage(${messageType})`,
                         errorId: eid,
                     });
-                } catch {}
+                } catch { }
             }
         };
     }
 
     // ============ lifecycle ============
     onCreate(options: any) {
+        this.seatReservationTimeout = 60;
+        this.playerToStart = options?.playerNum ?? 3;
+        console.log("this room is " + this.playerToStart + " players room")
         installGlobalCrashHooksOnce();
-
         try {
-            this.maxClients = ServerRoom.numberToStart;
+            this.maxClients = this.playerToStart;
 
             // 建议用 setState，避免一些内部 patch/初始化边界问题
-            this.setState(new RoomState());
+            this.state = new RoomState();
 
             this.logInfo("Room created", { options });
 
@@ -162,7 +164,7 @@ export class ServerRoom extends Room<RoomState> {
                 Board.create(this.KEY_COUNT, this.colors[i] ?? "")
             );
 
-            this.isFlowMode = this.roomName === "ringtactoe-flow";
+            this.isFlowMode = (this.roomName === "ringtactoe-flow") || (this.roomName === "ringtactoe-flow-2");
             this.currentMove = {
                 boardIndex: -1,
                 boardKeyIndex: -1,
@@ -187,6 +189,7 @@ export class ServerRoom extends Room<RoomState> {
                 options: {
                     name: options?.name,
                     useWXInfo: options?.useWXInfo,
+                    playerNum: options?.playerNum
                 },
                 ip:
                     request?.headers?.["x-forwarded-for"] ??
@@ -201,6 +204,8 @@ export class ServerRoom extends Room<RoomState> {
     }
 
     onJoin(client: Client, options: any) {
+
+        console.log("onJoin111111111111111")
         try {
             this.logInfo("Client join", { client, options });
 
@@ -483,7 +488,7 @@ export class ServerRoom extends Room<RoomState> {
             }
 
             // ---- next turn ----
-            this.turnPlayer = (this.turnPlayer + 1) % ServerRoom.numberToStart;
+            this.turnPlayer = (this.turnPlayer + 1) % this.playerToStart;
 
             if (this.leftRoomPlayers.includes(this.turnPlayer)) {
                 // TODO: AI move
@@ -510,7 +515,7 @@ export class ServerRoom extends Room<RoomState> {
             const eid = this.logError("onMove", err, { client, data });
             try {
                 client.send("serverError", { where: "onMove", errorId: eid });
-            } catch {}
+            } catch { }
         }
     }
 
@@ -561,7 +566,7 @@ export class ServerRoom extends Room<RoomState> {
     checkForStart() {
         this.logInfo("checkForStart", { playernum: this.playernum, hasStarted: this.hasStarted });
 
-        if (!this.hasStarted && this.playernum === ServerRoom.numberToStart) {
+        if (!this.hasStarted && this.playernum === this.playerToStart) {
             this.hasStarted = true;
             return true;
         }
