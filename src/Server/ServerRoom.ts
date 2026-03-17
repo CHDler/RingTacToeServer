@@ -9,6 +9,12 @@ type MoveMsg = {
     rotateBoardIndex: number;
 };
 
+type RoomMetadata = {
+    playerNum: number;
+    hasStarted: boolean;
+    createdAt: number;
+};
+
 export class Board {
     color: string;
     keys: ServerBoardKey[];
@@ -51,6 +57,7 @@ export class ServerRoom extends Room<RoomState> {
     turnPlayer = 0;
     playerToStart = 3;
     hasStarted = false;
+    createdAt = 0;
 
     BOARD_COUNT = 3;
     KEY_COUNT = 6;
@@ -112,6 +119,26 @@ export class ServerRoom extends Room<RoomState> {
         }
     }
 
+    private updateRoomMetadata() {
+        const metadata: RoomMetadata = {
+            playerNum: this.playerToStart,
+            hasStarted: this.hasStarted,
+            createdAt: this.createdAt,
+        };
+
+        void this.setMetadata(metadata).catch((err) => {
+            this.logError("setMetadata", err, { metadata });
+        });
+    }
+
+    private lockStartedRoom() {
+        if (this.locked) return;
+
+        void this.lock().catch((err) => {
+            this.logError("lock", err);
+        });
+    }
+
     /** 包一层，防止 onMessage handler throw 导致房间/进程异常，并且保证日志里有 stack */
     private safeMessageHandler<T>(
         messageType: string,
@@ -137,6 +164,7 @@ export class ServerRoom extends Room<RoomState> {
     onCreate(options: any) {
         this.seatReservationTimeout = 60;
         this.playerToStart = options?.playerNum ?? 3;
+        this.createdAt = Date.now();
         console.log("this room is " + this.playerToStart + " players room")
         installGlobalCrashHooksOnce();
         try {
@@ -173,6 +201,7 @@ export class ServerRoom extends Room<RoomState> {
                 rotateBoardIndex: -1,
             };
 
+            this.updateRoomMetadata();
             this.logInfo("Room mode", { isFlowMode: this.isFlowMode });
         } catch (err) {
             this.logError("onCreate", err, { options });
@@ -228,6 +257,8 @@ export class ServerRoom extends Room<RoomState> {
             if (this.checkForStart()) {
                 this.logInfo("Start game (enough players)");
                 this.assignRandomOrderAndStart();
+            } else {
+                this.updateRoomMetadata();
             }
         } catch (err) {
             this.logError("onJoin", err, { client, options });
@@ -249,6 +280,7 @@ export class ServerRoom extends Room<RoomState> {
 
             this.state.playerStates.delete(client.sessionId);
             this.playernum = Math.max(0, this.playernum - 1);
+            this.updateRoomMetadata();
         } catch (err) {
             this.logError("onLeave", err, { client, consented });
         }
@@ -536,6 +568,8 @@ export class ServerRoom extends Room<RoomState> {
 
         this.turnPlayer = 0;
         this.hasStarted = true;
+        this.updateRoomMetadata();
+        this.lockStartedRoom();
         this.notifyClientsToStart();
     }
 
@@ -566,11 +600,7 @@ export class ServerRoom extends Room<RoomState> {
     checkForStart() {
         this.logInfo("checkForStart", { playernum: this.playernum, hasStarted: this.hasStarted });
 
-        if (!this.hasStarted && this.playernum === this.playerToStart) {
-            this.hasStarted = true;
-            return true;
-        }
-        return false;
+        return !this.hasStarted && this.playernum === this.playerToStart;
     }
 
     checkForEnd(): boolean {

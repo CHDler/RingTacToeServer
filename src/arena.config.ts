@@ -15,9 +15,9 @@ export default Arena({
         /**
          * Define your room handlers:
          */
-        gameServer.define('ringtactoe-replace', ServerRoom);
-        gameServer.define('ringtactoe-flow', ServerRoom);
-        gameServer.define('ringtactoe-flow-2', ServerRoom);
+        gameServer.define('ringtactoe-replace', ServerRoom).filterBy(['playerNum']).sortBy({ clients: -1 });
+        gameServer.define('ringtactoe-flow', ServerRoom).filterBy(['playerNum']).sortBy({ clients: -1 });
+        gameServer.define('ringtactoe-flow-2', ServerRoom).filterBy(['playerNum']).sortBy({ clients: -1 });
 
 
         console.log("BOOT:", new Date().toISOString());
