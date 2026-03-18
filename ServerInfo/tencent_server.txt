@@ -1,0 +1,13 @@
+ssh root@159.75.242.73 -p 2222
+345@qq.com
+
+nginx
+ssh tttadmin@159.75.242.73 -p 22
+Ttt@2026
+cd /data/nginx/
+sudo /usr/local/nginx/sbin/nginx -s reload
+
+sudo systemctl stop ringtactoe      # 停止
+sudo systemctl start ringtactoe     # 启动
+sudo systemctl restart ringtactoe   # 重启
+sudo systemctl status ringtactoe    # 查看状态
