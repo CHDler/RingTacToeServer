@@ -13,6 +13,7 @@ export class PlayerState extends Schema {
     @type("int8") playerId = 0;
     @type("string") playerName = "";
     @type("int8") playerOrder = -1;
+    @type("int16") chosenMark = 0;
     @type("boolean") useWXName = false;
 }
 

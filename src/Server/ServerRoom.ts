@@ -71,6 +71,10 @@ export class ServerRoom extends Room<RoomState> {
     KEY_COUNT = 6;
     serverBoards: Board[] = [];
     colors = ["Blue", "Red", "Green"];
+    private readonly aiNamePrefix = "AI玩家";
+    private readonly aiTurnDelayMs = 450;
+    private aiTurnScheduleToken = 0;
+    private aiControlledSessionIds = new Set<string>();
 
 
     public isFlowMode = false;
@@ -149,6 +153,127 @@ export class ServerRoom extends Room<RoomState> {
     }
 
     /** 包一层，防止 onMessage handler throw 导致房间/进程异常，并且保证日志里有 stack */
+    private getSeatEntries() {
+        const seats: Array<{ sessionId: string; playerState: PlayerState }> = [];
+        this.state.playerStates.forEach((playerState, sessionId) => {
+            seats.push({ sessionId, playerState });
+        });
+        return seats;
+    }
+
+    private getSeatCount() {
+        return this.getSeatEntries().length;
+    }
+
+    private getAiName(playerState: PlayerState) {
+        const index = playerState.playerOrder >= 0 ? playerState.playerOrder : playerState.playerId;
+        const safeIndex = Number.isFinite(index) ? Math.max(0, Math.floor(index)) : 0;
+        return `${this.aiNamePrefix}${safeIndex}`;
+    }
+
+    private refreshAiOrdersFromState() {
+        const aiOrders: number[] = [];
+        this.state.playerStates.forEach((playerState, sessionId) => {
+            if (!this.aiControlledSessionIds.has(sessionId)) return;
+            if (playerState.playerOrder < 0) return;
+            aiOrders.push(playerState.playerOrder);
+        });
+        aiOrders.sort((left, right) => left - right);
+        this.leftRoomPlayers = aiOrders;
+    }
+
+    private findSeatByOrder(order: number) {
+        for (const seat of this.getSeatEntries()) {
+            if (seat.playerState.playerOrder === order) {
+                return seat;
+            }
+        }
+        return null;
+    }
+
+    private findAiSeatByOrder(order: number) {
+        const seat = this.findSeatByOrder(order);
+        if (!seat) return null;
+        if (!this.aiControlledSessionIds.has(seat.sessionId)) return null;
+        return seat;
+    }
+
+    private promoteSeatToAi(sessionId: string, playerState: PlayerState) {
+        this.aiControlledSessionIds.add(sessionId);
+        playerState.useWXName = false;
+        playerState.playerName = this.getAiName(playerState);
+        this.refreshAiOrdersFromState();
+        this.playernum = this.getSeatCount();
+    }
+
+    private buildRandomAiMove(): MoveMsg | null {
+        const candidates: Array<{ boardIndex: number; boardKeyIndex: number }> = [];
+
+        for (let boardIndex = 0; boardIndex < this.serverBoards.length; boardIndex++) {
+            const board = this.serverBoards[boardIndex];
+            for (let boardKeyIndex = 0; boardKeyIndex < board.keys.length; boardKeyIndex++) {
+                if (!board.keys[boardKeyIndex].isEmpty) continue;
+                candidates.push({ boardIndex, boardKeyIndex });
+            }
+        }
+
+        if (candidates.length === 0) {
+            return null;
+        }
+
+        const choice = candidates[Math.floor(Math.random() * candidates.length)];
+        return {
+            boardIndex: choice.boardIndex,
+            boardKeyIndex: choice.boardKeyIndex,
+            rotateStep: 0,
+            rotateDirection: 0,
+            rotateBoardIndex: -1,
+        };
+    }
+
+    private scheduleAiTurnIfNeeded(reason: string) {
+        if (!this.hasStarted) return;
+
+        const aiSeat = this.findAiSeatByOrder(this.turnPlayer);
+        if (!aiSeat) return;
+
+        const token = ++this.aiTurnScheduleToken;
+        this.logInfo("Schedule AI turn", {
+            reason,
+            turnPlayer: this.turnPlayer,
+            playerId: aiSeat.playerState.playerId,
+        });
+
+        this.clock.setTimeout(() => {
+            if (token !== this.aiTurnScheduleToken) return;
+            if (!this.hasStarted) return;
+
+            const currentAiSeat = this.findAiSeatByOrder(this.turnPlayer);
+            if (!currentAiSeat) return;
+
+            const aiMove = this.buildRandomAiMove();
+            if (!aiMove) {
+                this.logWarn("AI found no valid move", {
+                    turnPlayer: this.turnPlayer,
+                    reason,
+                });
+                return;
+            }
+
+            try {
+                this.processMove(currentAiSeat.playerState, aiMove, {
+                    actorLabel: "AI",
+                    broadcastMoveMsg: null,
+                });
+            } catch (err) {
+                this.logError("runAiTurn", err, {
+                    turnPlayer: this.turnPlayer,
+                    aiMove,
+                });
+            }
+        }, this.aiTurnDelayMs);
+    }
+
     private safeMessageHandler<T>(
         messageType: string,
         fn: (client: Client, data: T) => any
@@ -262,14 +387,19 @@ export class ServerRoom extends Room<RoomState> {
                 throw new Error("playerStates.set succeeded but get returned undefined");
             }
 
-            s.playerId = this.playernum;
-            this.playernum++;
+            this.playernum = this.getSeatCount();
+            s.playerId = Math.max(0, this.playernum - 1);
 
             const rawName = options?.name ?? "";
             const useWXInfo = Boolean(options?.useWXInfo);
+            const rawChosenMark = Number(options?.chosenMark);
             const name = rawName.toString().slice(0, 24);
+            const chosenMark = Number.isFinite(rawChosenMark) && rawChosenMark >= 0
+                ? Math.floor(rawChosenMark)
+                : 0;
 
             s.playerName = name;        // ✅ 修复：之前写 rawName，截断没生效
+            s.chosenMark = chosenMark;
             s.useWXName = useWXInfo;
 
             if (this.checkForStart()) {
@@ -289,16 +419,28 @@ export class ServerRoom extends Room<RoomState> {
         try {
             const playerState = this.state.playerStates.get(client.sessionId);
             const playerID = playerState?.playerId ?? -1;
+            const playerOrder = playerState?.playerOrder ?? -1;
 
-            this.logWarn("Client leave", { client, consented, playerID });
+            this.logWarn("Client leave", { client, consented, playerID, playerOrder });
 
-            if (playerID !== -1 && !this.leftRoomPlayers.includes(playerID)) {
-                this.leftRoomPlayers.push(playerID);
+            if (!playerState) {
+                this.playernum = this.getSeatCount();
+                this.updateRoomMetadata();
+                return;
             }
 
-            this.state.playerStates.delete(client.sessionId);
-            this.playernum = Math.max(0, this.playernum - 1);
+            this.promoteSeatToAi(client.sessionId, playerState);
             this.updateRoomMetadata();
+
+            if (this.checkForStart()) {
+                this.logInfo("Start game (AI backfill after leave)");
+                this.assignRandomOrderAndStart();
+                return;
+            }
+
+            if (this.hasStarted && playerOrder === this.turnPlayer) {
+                this.scheduleAiTurnIfNeeded("player left on active turn");
+            }
         } catch (err) {
             this.logError("onLeave", err, { client, consented });
         }
@@ -306,6 +448,7 @@ export class ServerRoom extends Room<RoomState> {
 
     onDispose() {
         try {
+            this.aiTurnScheduleToken++;
             this.logInfo("Room disposed");
         } catch (err) {
             this.logError("onDispose", err);
@@ -316,6 +459,14 @@ export class ServerRoom extends Room<RoomState> {
     onMove(client: Client, data: any) {
         // 这里不要 throw，尽量 reject + 打日志
         try {
+            const activePlayerState = this.state.playerStates.get(client.sessionId);
+            this.processMove(activePlayerState, data as MoveMsg, {
+                client,
+                actorLabel: "player",
+                broadcastMoveMsg: data as MoveMsg,
+            });
+            return;
+
             if (!data) {
                 this.reject(client, "empty data");
                 return;
@@ -577,8 +728,300 @@ export class ServerRoom extends Room<RoomState> {
         }
     }
 
+    private processMove(
+        player: PlayerState | undefined,
+        data: MoveMsg | null | undefined,
+        options: {
+            client?: Client;
+            actorLabel: string;
+            broadcastMoveMsg?: MoveMsg | null;
+        }
+    ) {
+        const rejectMove = (reason: string, extra?: any) => {
+            if (options.client) {
+                this.reject(options.client, reason, extra);
+            } else {
+                this.logWarn(`${options.actorLabel} move rejected: ${reason}`, extra);
+            }
+        };
+
+        if (!data) {
+            rejectMove("empty data");
+            return false;
+        }
+
+        if (!player) {
+            rejectMove("playerState missing");
+            return false;
+        }
+
+        if (player.playerOrder !== this.turnPlayer) {
+            rejectMove(`player order wrong: ${player.playerOrder} should be ${this.turnPlayer}`, {
+                turnPlayer: this.turnPlayer,
+                playerOrder: player.playerOrder,
+                playerId: player.playerId,
+            });
+            return false;
+        }
+
+        this.currentMove = data as MoveMsg;
+
+        const boardIndex = this.currentMove.boardIndex;
+        const boardKeyIndex = this.currentMove.boardKeyIndex;
+        const rotateStep = this.currentMove.rotateStep;
+        const rotateDirection = this.currentMove.rotateDirection;
+        const rotateBoardIndex = this.currentMove.rotateBoardIndex;
+
+        if (
+            boardIndex < 0 ||
+            boardIndex >= this.serverBoards.length ||
+            boardKeyIndex < 0
+        ) {
+            rejectMove(`invalid boardIndex/boardKeyIndex: b=${boardIndex}, k=${boardKeyIndex}`);
+            return false;
+        }
+
+        const board = this.serverBoards[boardIndex];
+        const keyLength = board.keys.length;
+
+        if (boardKeyIndex < 0 || boardKeyIndex >= keyLength) {
+            rejectMove(`invalid boardKeyIndex: ${boardKeyIndex}, keyLength=${keyLength}`);
+            return false;
+        }
+
+        const key = board.keys[boardKeyIndex];
+        if (!key.isEmpty) {
+            rejectMove(`key already filled by player ${key.playerId}`);
+            return false;
+        }
+
+        key.isEmpty = false;
+        key.playerId = player.playerId;
+
+        const blueBoard = this.serverBoards[0];
+        const redBoard = this.serverBoards[1];
+        const greenBoard = this.serverBoards[2];
+
+        if (this.isFlowMode) {
+            try {
+                switch (boardIndex) {
+                    case 0:
+                        switch (boardKeyIndex) {
+                            case 4:
+                                greenBoard.keys[0].isEmpty = blueBoard.keys[4].isEmpty;
+                                greenBoard.keys[0].playerId = blueBoard.keys[4].playerId;
+                                redBoard.keys[2].isEmpty = blueBoard.keys[4].isEmpty;
+                                redBoard.keys[2].playerId = blueBoard.keys[4].playerId;
+                                break;
+                            case 3:
+                                greenBoard.keys[1].isEmpty = blueBoard.keys[3].isEmpty;
+                                greenBoard.keys[1].playerId = blueBoard.keys[3].playerId;
+                                break;
+                            case 5:
+                                redBoard.keys[1].isEmpty = blueBoard.keys[5].isEmpty;
+                                redBoard.keys[1].playerId = blueBoard.keys[5].playerId;
+                                break;
+                        }
+                        break;
+
+                    case 1:
+                        switch (boardKeyIndex) {
+                            case 3:
+                                greenBoard.keys[5].isEmpty = redBoard.keys[3].isEmpty;
+                                greenBoard.keys[5].playerId = redBoard.keys[3].playerId;
+                                break;
+                            case 1:
+                                blueBoard.keys[5].isEmpty = redBoard.keys[1].isEmpty;
+                                blueBoard.keys[5].playerId = redBoard.keys[1].playerId;
+                                break;
+                            case 2:
+                                greenBoard.keys[0].isEmpty = redBoard.keys[2].isEmpty;
+                                greenBoard.keys[0].playerId = redBoard.keys[2].playerId;
+                                blueBoard.keys[4].isEmpty = redBoard.keys[2].isEmpty;
+                                blueBoard.keys[4].playerId = redBoard.keys[2].playerId;
+                                break;
+                        }
+                        break;
+
+                    case 2:
+                        switch (boardKeyIndex) {
+                            case 5:
+                                redBoard.keys[3].isEmpty = greenBoard.keys[5].isEmpty;
+                                redBoard.keys[3].playerId = greenBoard.keys[5].playerId;
+                                break;
+                            case 1:
+                                blueBoard.keys[3].isEmpty = greenBoard.keys[1].isEmpty;
+                                blueBoard.keys[3].playerId = greenBoard.keys[1].playerId;
+                                break;
+                            case 0:
+                                redBoard.keys[2].isEmpty = greenBoard.keys[0].isEmpty;
+                                redBoard.keys[2].playerId = greenBoard.keys[0].playerId;
+                                blueBoard.keys[4].isEmpty = greenBoard.keys[0].isEmpty;
+                                blueBoard.keys[4].playerId = greenBoard.keys[0].playerId;
+                                break;
+                        }
+                        break;
+                }
+            } catch (e) {
+                this.logError("flowSyncAfterPlace", e, {
+                    client: options.client,
+                    actorLabel: options.actorLabel,
+                    boardIndex,
+                    boardKeyIndex,
+                    playerId: player.playerId,
+                });
+            }
+        }
+
+        this.logInfo("Placed", {
+            client: options.client,
+            actorLabel: options.actorLabel,
+            boardIndex,
+            boardKeyIndex,
+            playerId: key.playerId,
+        });
+
+        {
+            const mod = (a: number, n: number) => ((a % n) + n) % n;
+
+            if (rotateBoardIndex < -1 || rotateBoardIndex >= this.serverBoards.length) {
+                rejectMove(`invalid rotateBoardIndex: ${rotateBoardIndex}`);
+                return false;
+            }
+
+            if (rotateBoardIndex !== -1) {
+                const rBoard = this.serverBoards[rotateBoardIndex];
+                const keys = rBoard.keys;
+                const n = keys.length;
+
+                if (n === 0) {
+                    this.logError("rotation", new Error("rotate board has no keys"), {
+                        client: options.client,
+                        rotateBoardIndex,
+                        actorLabel: options.actorLabel,
+                    });
+                    rejectMove(`rotate board ${rotateBoardIndex} has no keys`);
+                    return false;
+                }
+
+                const step = Number(rotateStep) || 0;
+                const dir = Number(rotateDirection) || 0;
+                const shift = mod(step * dir, n);
+
+                this.logInfo("Rotation", {
+                    client: options.client,
+                    actorLabel: options.actorLabel,
+                    rotateBoardIndex,
+                    step,
+                    dir,
+                    shift,
+                });
+
+                const old = keys.map((k) => ({ isEmpty: k.isEmpty, playerId: k.playerId }));
+                for (let i = 0; i < n; i++) {
+                    const src = mod(i - shift, n);
+                    keys[i].isEmpty = old[src].isEmpty;
+                    keys[i].playerId = old[src].playerId;
+                }
+
+                if (this.isFlowMode) {
+                    try {
+                        switch (rotateBoardIndex) {
+                            case 0:
+                                greenBoard.keys[0].isEmpty = blueBoard.keys[4].isEmpty;
+                                greenBoard.keys[0].playerId = blueBoard.keys[4].playerId;
+                                redBoard.keys[2].isEmpty = blueBoard.keys[4].isEmpty;
+                                redBoard.keys[2].playerId = blueBoard.keys[4].playerId;
+
+                                greenBoard.keys[1].isEmpty = blueBoard.keys[3].isEmpty;
+                                greenBoard.keys[1].playerId = blueBoard.keys[3].playerId;
+
+                                redBoard.keys[1].isEmpty = blueBoard.keys[5].isEmpty;
+                                redBoard.keys[1].playerId = blueBoard.keys[5].playerId;
+                                break;
+
+                            case 1:
+                                greenBoard.keys[5].isEmpty = redBoard.keys[3].isEmpty;
+                                greenBoard.keys[5].playerId = redBoard.keys[3].playerId;
+
+                                blueBoard.keys[5].isEmpty = redBoard.keys[1].isEmpty;
+                                blueBoard.keys[5].playerId = redBoard.keys[1].playerId;
+
+                                greenBoard.keys[0].isEmpty = redBoard.keys[2].isEmpty;
+                                greenBoard.keys[0].playerId = redBoard.keys[2].playerId;
+                                blueBoard.keys[4].isEmpty = redBoard.keys[2].isEmpty;
+                                blueBoard.keys[4].playerId = redBoard.keys[2].playerId;
+                                break;
+
+                            case 2:
+                                redBoard.keys[3].isEmpty = greenBoard.keys[5].isEmpty;
+                                redBoard.keys[3].playerId = greenBoard.keys[5].playerId;
+
+                                blueBoard.keys[3].isEmpty = greenBoard.keys[1].isEmpty;
+                                blueBoard.keys[3].playerId = greenBoard.keys[1].playerId;
+
+                                redBoard.keys[2].isEmpty = greenBoard.keys[0].isEmpty;
+                                redBoard.keys[2].playerId = greenBoard.keys[0].playerId;
+                                blueBoard.keys[4].isEmpty = greenBoard.keys[0].isEmpty;
+                                blueBoard.keys[4].playerId = greenBoard.keys[0].playerId;
+                                break;
+                        }
+                    } catch (e) {
+                        this.logError("flowSyncAfterRotate", e, {
+                            client: options.client,
+                            actorLabel: options.actorLabel,
+                            rotateBoardIndex,
+                        });
+                    }
+                }
+            }
+        }
+
+        this.turnPlayer = (this.turnPlayer + 1) % this.playerToStart;
+
+        const endGamePayload = this.checkForEnd();
+        const moveMsgToBroadcast = options.broadcastMoveMsg === undefined
+            ? this.currentMove
+            : options.broadcastMoveMsg;
+
+        try {
+            const payload: any = {
+                boards: this.serverBoards,
+                turnPlayer: this.turnPlayer,
+            };
+
+            if (moveMsgToBroadcast != null) {
+                payload.moveMsg = moveMsgToBroadcast;
+            }
+
+            this.broadcast("moveAccepted", payload);
+        } catch (e) {
+            this.logError("broadcast(moveAccepted)", e, {
+                client: options.client,
+                actorLabel: options.actorLabel,
+                playerId: player.playerId,
+            });
+        }
+
+        if (endGamePayload) {
+            try {
+                this.broadcast("endGame", endGamePayload);
+            } catch (e) {
+                this.logError("broadcast(endGame)", e, {
+                    client: options.client,
+                    actorLabel: options.actorLabel,
+                    endGamePayload,
+                });
+            }
+            return true;
+        }
+
+        this.scheduleAiTurnIfNeeded(`${options.actorLabel} move`);
+        return true;
+    }
+
     assignRandomOrderAndStart() {
-        const ids = this.clients.map((c) => c.sessionId);
+        const ids = this.getSeatEntries().map((seat) => seat.sessionId);
         this.shuffleInPlace(ids);
 
         for (let i = 0; i < ids.length; i++) {
@@ -586,20 +1029,43 @@ export class ServerRoom extends Room<RoomState> {
             if (s) {
                 s.playerOrder = i;
                 s.playerId = i;
+                if (this.aiControlledSessionIds.has(ids[i])) {
+                    s.useWXName = false;
+                    s.playerName = this.getAiName(s);
+                    continue;
+                }
                 if (!s.useWXName) {
                     s.playerName = "玩家" + i.toString();
                 }
             }
         }
 
+        this.playernum = this.getSeatCount();
         this.turnPlayer = 0;
         this.hasStarted = true;
+        this.refreshAiOrdersFromState();
         this.updateRoomMetadata();
         this.lockStartedRoom();
         this.notifyClientsToStart();
+        this.scheduleAiTurnIfNeeded("game start");
     }
 
     notifyClientsToStart() {
+        const playerInfos = this.getSeatEntries()
+            .map((seat) => {
+                const playerState = seat.playerState;
+                return {
+                    order: playerState?.playerOrder ?? -1,
+                    playerId: playerState?.playerId ?? -1,
+                    name: playerState?.playerName ?? "",
+                    chosenMark: playerState?.chosenMark ?? 0,
+                    useWXName: playerState?.useWXName ?? false,
+                };
+            })
+            .filter((player) => player.order >= 0)
+            .sort((left, right) => left.order - right.order);
+        const playerMarks = playerInfos.map((player) => player.chosenMark ?? 0);
+
         for (const client of this.clients) {
             const s = this.state.playerStates.get(client.sessionId);
             try {
@@ -607,8 +1073,11 @@ export class ServerRoom extends Room<RoomState> {
                     order: s?.playerOrder ?? -1,
                     playerId: s?.playerId ?? -1,
                     turnPlayer: this.turnPlayer,
-                    players: this.clients.length,
+                    players: playerInfos.length,
                     name: s?.playerName,
+                    useWXName: s?.useWXName ?? false,
+                    playerInfos,
+                    playerMarks,
                 });
             } catch (e) {
                 this.logError("client.send(start_game)", e, { client });
@@ -624,9 +1093,15 @@ export class ServerRoom extends Room<RoomState> {
     }
 
     checkForStart() {
-        this.logInfo("checkForStart", { playernum: this.playernum, hasStarted: this.hasStarted });
+        const occupiedSeats = this.getSeatCount();
+        this.playernum = occupiedSeats;
+        this.logInfo("checkForStart", {
+            playernum: this.playernum,
+            hasStarted: this.hasStarted,
+            connectedClients: this.clients.length,
+        });
 
-        return !this.hasStarted && this.playernum === this.playerToStart;
+        return !this.hasStarted && occupiedSeats === this.playerToStart && this.clients.length > 0;
     }
 
     checkForEnd(): EndGamePayload | null {
