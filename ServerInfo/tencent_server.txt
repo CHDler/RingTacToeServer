@@ -11,3 +11,4 @@ sudo systemctl stop ringtactoe      # 停止
 sudo systemctl start ringtactoe     # 启动
 sudo systemctl restart ringtactoe   # 重启
 sudo systemctl status ringtactoe    # 查看状态
+sudo systemctl disable ringtactoe 以后开机也不要自动启动

@@ -57,6 +57,8 @@ function installGlobalCrashHooksOnce() {
 }
 
 export class ServerRoom extends Room<RoomState> {
+    private static readonly IDLE_STATE_TICK_INTERVAL_MS = 1000;
+
     seatReservationTimeout = 60;
 
     leftRoomPlayers: number[] = [];
@@ -319,7 +321,7 @@ export class ServerRoom extends Room<RoomState> {
                 } catch (e) {
                     this.logError("tickInterval", e);
                 }
-            }, 10);
+            }, ServerRoom.IDLE_STATE_TICK_INTERVAL_MS);
 
             this.onMessage(
                 "confirmMove",
@@ -377,6 +379,11 @@ export class ServerRoom extends Room<RoomState> {
         try {
             if (this.hasStarted) {
                 throw new Error("room already started");
+            }
+
+            const joinInviteOnly = Boolean(options?.inviteOnly);
+            if (joinInviteOnly !== this.inviteOnly) {
+                throw new Error(`room mode mismatch: room inviteOnly=${this.inviteOnly}, join inviteOnly=${joinInviteOnly}`);
             }
 
             this.logInfo("Client join", { client, options });
