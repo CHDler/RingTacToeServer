@@ -12,3 +12,14 @@ sudo systemctl start ringtactoe     # 启动
 sudo systemctl restart ringtactoe   # 重启
 sudo systemctl status ringtactoe    # 查看状态
 sudo systemctl disable ringtactoe 以后开机也不要自动启动
+
+cd d:\Cocos\Project\RingChess
+
+# 预演，不写文件
+npm.cmd run font:kuile-to-system
+
+# 真正写入：KuaiLe -> system
+npm.cmd run font:kuile-to-system -- --apply
+
+# 真正写入：system -> KuaiLe
+npm.cmd run font:system-to-kuile -- --apply
