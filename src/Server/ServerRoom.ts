@@ -436,6 +436,18 @@ export class ServerRoom extends Room<RoomState> {
                 return;
             }
 
+            const gameAlreadyEnded = this.hasStarted && this.checkForEnd() !== null;
+            if (gameAlreadyEnded) {
+                this.logInfo("Skip AI promotion because game already ended", {
+                    client,
+                    playerID,
+                    playerOrder,
+                });
+                this.playernum = this.getSeatCount();
+                this.updateRoomMetadata();
+                return;
+            }
+
             this.promoteSeatToAi(client.sessionId, playerState);
             this.updateRoomMetadata();
 
