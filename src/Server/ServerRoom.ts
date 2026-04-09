@@ -22,6 +22,13 @@ type RoomMetadata = {
     inviteOnly: boolean;
 };
 
+type TurnTimerPayload = {
+    turnPlayer: number;
+    turnTimeMs: number;
+    turnDeadlineAt: number;
+    serverTimeAt: number;
+};
+
 export class Board {
     color: string;
     keys: ServerBoardKey[];
@@ -77,6 +84,9 @@ export class ServerRoom extends Room<RoomState> {
     private readonly aiTurnDelayMs = 450;
     private aiTurnScheduleToken = 0;
     private aiControlledSessionIds = new Set<string>();
+    private turnTimeMs = 10000;
+    private turnTimerScheduleToken = 0;
+    private turnDeadlineAt = 0;
 
 
     public isFlowMode = false;
@@ -208,7 +218,31 @@ export class ServerRoom extends Room<RoomState> {
         this.playernum = this.getSeatCount();
     }
 
-    private buildRandomAiMove(): MoveMsg | null {
+    private normalizeTurnTimeMs(value: any) {
+        const raw = Number(value);
+        if (!Number.isFinite(raw) || raw <= 0) {
+            return this.turnTimeMs;
+        }
+
+        const ms = raw < 1000 ? raw * 1000 : raw;
+        return Math.max(1000, Math.floor(ms));
+    }
+
+    private buildTurnTimerPayload(): TurnTimerPayload {
+        return {
+            turnPlayer: this.turnPlayer,
+            turnTimeMs: this.turnTimeMs,
+            turnDeadlineAt: this.turnDeadlineAt,
+            serverTimeAt: Date.now(),
+        };
+    }
+
+    private cancelTurnTimer() {
+        this.turnTimerScheduleToken++;
+        this.turnDeadlineAt = 0;
+    }
+
+    private buildRandomServerMove(): MoveMsg | null {
         const candidates: Array<{ boardIndex: number; boardKeyIndex: number }> = [];
 
         for (let boardIndex = 0; boardIndex < this.serverBoards.length; boardIndex++) {
@@ -233,6 +267,89 @@ export class ServerRoom extends Room<RoomState> {
         };
     }
 
+    private scheduleTurnTimerIfNeeded(reason: string): TurnTimerPayload | null {
+        if (!this.hasStarted) return null;
+
+        if (this.findAiSeatByOrder(this.turnPlayer)) {
+            this.cancelTurnTimer();
+            return null;
+        }
+
+        const activeSeat = this.findSeatByOrder(this.turnPlayer);
+        if (!activeSeat) {
+            this.cancelTurnTimer();
+            this.logWarn("Cannot schedule turn timer: active seat missing", {
+                reason,
+                turnPlayer: this.turnPlayer,
+            });
+            return null;
+        }
+
+        const token = ++this.turnTimerScheduleToken;
+        this.turnDeadlineAt = Date.now() + this.turnTimeMs;
+        const payload = this.buildTurnTimerPayload();
+
+        this.logInfo("Schedule turn timer", {
+            reason,
+            turnPlayer: this.turnPlayer,
+            turnTimeMs: this.turnTimeMs,
+            turnDeadlineAt: this.turnDeadlineAt,
+        });
+
+        this.clock.setTimeout(() => {
+            this.runTurnTimeout(token, reason);
+        }, this.turnTimeMs);
+
+        return payload;
+    }
+
+    private beginTurn(reason: string): TurnTimerPayload | null {
+        this.scheduleAiTurnIfNeeded(reason);
+        return this.scheduleTurnTimerIfNeeded(reason);
+    }
+
+    private runTurnTimeout(token: number, reason: string) {
+        if (token !== this.turnTimerScheduleToken) return;
+        if (!this.hasStarted) return;
+
+        const activeSeat = this.findSeatByOrder(this.turnPlayer);
+        if (!activeSeat) {
+            this.logWarn("Turn timeout skipped: active seat missing", {
+                reason,
+                turnPlayer: this.turnPlayer,
+            });
+            return;
+        }
+
+        const timeoutMove = this.buildRandomServerMove();
+        if (!timeoutMove) {
+            this.logWarn("Turn timeout found no valid move", {
+                reason,
+                turnPlayer: this.turnPlayer,
+            });
+            return;
+        }
+
+        this.logInfo("Turn timeout: server random move", {
+            reason,
+            turnPlayer: this.turnPlayer,
+            playerId: activeSeat.playerState.playerId,
+            timeoutMove,
+        });
+
+        try {
+            this.processMove(activeSeat.playerState, timeoutMove, {
+                actorLabel: "timeout",
+                broadcastMoveMsg: timeoutMove,
+            });
+        } catch (err) {
+            this.logError("runTurnTimeout", err, {
+                turnPlayer: this.turnPlayer,
+                timeoutMove,
+            });
+        }
+    }
+
     private scheduleAiTurnIfNeeded(reason: string) {
         if (!this.hasStarted) return;
 
@@ -253,7 +370,7 @@ export class ServerRoom extends Room<RoomState> {
             const currentAiSeat = this.findAiSeatByOrder(this.turnPlayer);
             if (!currentAiSeat) return;
 
-            const aiMove = this.buildRandomAiMove();
+            const aiMove = this.buildRandomServerMove();
             if (!aiMove) {
                 this.logWarn("AI found no valid move", {
                     turnPlayer: this.turnPlayer,
@@ -300,6 +417,7 @@ export class ServerRoom extends Room<RoomState> {
     onCreate(options: any) {
         this.seatReservationTimeout = 60;
         this.playerToStart = options?.playerNum ?? 3;
+        this.turnTimeMs = this.normalizeTurnTimeMs(options?.turnTimeMs ?? options?.roundTimeMs ?? options?.oneRoundTimeMs);
         this.createdAt = Date.now();
         this.inviteOnly = Boolean(options?.inviteOnly);
         console.log("this room is " + this.playerToStart + " players room")
@@ -359,6 +477,7 @@ export class ServerRoom extends Room<RoomState> {
                     name: options?.name,
                     useWXInfo: options?.useWXInfo,
                     playerNum: options?.playerNum,
+                    turnTimeMs: options?.turnTimeMs,
                     inviteOnly: options?.inviteOnly,
                 },
                 ip:
@@ -458,7 +577,7 @@ export class ServerRoom extends Room<RoomState> {
             }
 
             if (this.hasStarted && playerOrder === this.turnPlayer) {
-                this.scheduleAiTurnIfNeeded("player left on active turn");
+                this.beginTurn("player left on active turn");
             }
         } catch (err) {
             this.logError("onLeave", err, { client, consented });
@@ -468,6 +587,7 @@ export class ServerRoom extends Room<RoomState> {
     onDispose() {
         try {
             this.aiTurnScheduleToken++;
+            this.cancelTurnTimer();
             this.logInfo("Room disposed");
         } catch (err) {
             this.logError("onDispose", err);
@@ -814,6 +934,7 @@ export class ServerRoom extends Room<RoomState> {
             return false;
         }
 
+        this.cancelTurnTimer();
         key.isEmpty = false;
         key.playerId = player.playerId;
 
@@ -999,6 +1120,7 @@ export class ServerRoom extends Room<RoomState> {
         this.turnPlayer = (this.turnPlayer + 1) % this.playerToStart;
 
         const endGamePayload = this.checkForEnd();
+        const turnTimer = endGamePayload ? null : this.beginTurn(`${options.actorLabel} move`);
         const moveMsgToBroadcast = options.broadcastMoveMsg === undefined
             ? this.currentMove
             : options.broadcastMoveMsg;
@@ -1011,6 +1133,9 @@ export class ServerRoom extends Room<RoomState> {
 
             if (moveMsgToBroadcast != null) {
                 payload.moveMsg = moveMsgToBroadcast;
+            }
+            if (turnTimer) {
+                payload.turnTimer = turnTimer;
             }
 
             this.broadcast("moveAccepted", payload);
@@ -1035,7 +1160,6 @@ export class ServerRoom extends Room<RoomState> {
             return true;
         }
 
-        this.scheduleAiTurnIfNeeded(`${options.actorLabel} move`);
         return true;
     }
 
@@ -1065,11 +1189,11 @@ export class ServerRoom extends Room<RoomState> {
         this.refreshAiOrdersFromState();
         this.updateRoomMetadata();
         this.lockStartedRoom();
-        this.notifyClientsToStart();
-        this.scheduleAiTurnIfNeeded("game start");
+        const turnTimer = this.beginTurn("game start");
+        this.notifyClientsToStart(turnTimer);
     }
 
-    notifyClientsToStart() {
+    notifyClientsToStart(turnTimer: TurnTimerPayload | null = null) {
         const playerInfos = this.getSeatEntries()
             .map((seat) => {
                 const playerState = seat.playerState;
@@ -1097,6 +1221,7 @@ export class ServerRoom extends Room<RoomState> {
                     useWXName: s?.useWXName ?? false,
                     playerInfos,
                     playerMarks,
+                    turnTimer,
                 });
             } catch (e) {
                 this.logError("client.send(start_game)", e, { client });
