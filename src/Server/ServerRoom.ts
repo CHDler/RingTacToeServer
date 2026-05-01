@@ -84,7 +84,7 @@ export class ServerRoom extends Room<RoomState> {
     private readonly aiTurnDelayMs = 450;
     private aiTurnScheduleToken = 0;
     private aiControlledSessionIds = new Set<string>();
-    private turnTimeMs = 10000;
+    private turnTimeMs = 15000;
     private turnTimerScheduleToken = 0;
     private turnDeadlineAt = 0;
 
