@@ -26,8 +26,10 @@ export default Arena({
 
     initializeExpress: (app) => {
         const corsOptions = {
-            origin: true,
+            origin: ["http://localhost:7456", "http://ringtactoe.com:7456", "http://ringtactoe.com"],
             credentials: true,
+            methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE", "OPTIONS"],
+            allowedHeaders: ["Content-Type", "Authorization"],
         };
 
         app.use(cors(corsOptions));
