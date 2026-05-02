@@ -84,7 +84,7 @@ export class ServerRoom extends Room<RoomState> {
     private readonly aiTurnDelayMs = 450;
     private aiTurnScheduleToken = 0;
     private aiControlledSessionIds = new Set<string>();
-    private turnTimeMs = 15000;
+    private turnTimeMs = 10000;
     private turnTimerScheduleToken = 0;
     private turnDeadlineAt = 0;
 
@@ -444,10 +444,6 @@ export class ServerRoom extends Room<RoomState> {
             this.onMessage(
                 "confirmMove",
                 this.safeMessageHandler<any>("confirmMove", (client, data) => this.onMove(client, data))
-            );
-            this.onMessage(
-                "restartMatch",
-                this.safeMessageHandler<any>("restartMatch", (client, data) => this.onRestartMatch(client, data))
             );
 
             this.serverBoards = Array.from({ length: this.BOARD_COUNT }, (_, i) =>
@@ -1231,50 +1227,6 @@ export class ServerRoom extends Room<RoomState> {
                 this.logError("client.send(start_game)", e, { client });
             }
         }
-    }
-
-    private resetGameForRestart(): TurnTimerPayload | null {
-        this.aiTurnScheduleToken++;
-        this.cancelTurnTimer();
-
-        this.serverBoards = Array.from({ length: this.BOARD_COUNT }, (_, i) =>
-            Board.create(this.KEY_COUNT, this.colors[i] ?? "")
-        );
-        this.currentMove = {
-            boardIndex: -1,
-            boardKeyIndex: -1,
-            rotateStep: 0,
-            rotateDirection: 0,
-            rotateBoardIndex: -1,
-        };
-        this.turnPlayer = 0;
-        this.leftRoomPlayers = [];
-        this.hasStarted = true;
-        this.refreshAiOrdersFromState();
-        this.updateRoomMetadata();
-        this.lockStartedRoom();
-
-        return this.beginTurn("restart match");
-    }
-
-    private onRestartMatch(client: Client, data: any) {
-        const playerState = this.state.playerStates.get(client.sessionId);
-        const playerId = playerState?.playerId ?? -1;
-        const endGamePayload = this.checkForEnd();
-
-        if (!this.inviteOnly) {
-            this.logWarn("Reject restartMatch: not a private room", { client, playerId });
-            return;
-        }
-
-        if (!endGamePayload) {
-            this.logWarn("Reject restartMatch: game has not ended", { client, playerId });
-            return;
-        }
-
-        this.logInfo("Restarting private room match", { client, playerId });
-        const turnTimer = this.resetGameForRestart();
-        this.notifyClientsToStart(turnTimer);
     }
 
     private shuffleInPlace<T>(arr: T[]) {
