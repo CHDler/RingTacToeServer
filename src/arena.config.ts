@@ -25,12 +25,27 @@ export default Arena({
     },
 
     initializeExpress: (app) => {
+        const allowedOrigins = ["http://localhost:7456", "http://ringtactoe.com:7456", "http://ringtactoe.com"];
         const corsOptions = {
-            origin: ["http://localhost:7456", "http://ringtactoe.com:7456", "http://ringtactoe.com"],
+            origin: allowedOrigins,
             credentials: true,
             methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE", "OPTIONS"],
-            allowedHeaders: ["Content-Type", "Authorization"],
+            allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
         };
+
+        app.use((req, res, next) => {
+            const origin = req.headers.origin as string;
+            if (origin && allowedOrigins.includes(origin)) {
+                res.header("Access-Control-Allow-Origin", origin);
+            }
+            res.header("Access-Control-Allow-Credentials", "true");
+            res.header("Access-Control-Allow-Methods", "GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS");
+            res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
+            if (req.method === "OPTIONS") {
+                return res.sendStatus(204);
+            }
+            next();
+        });
 
         app.use(cors(corsOptions));
         app.options("*", cors(corsOptions));
