@@ -20,6 +20,7 @@ type RoomMetadata = {
     hasStarted: boolean;
     createdAt: number;
     inviteOnly: boolean;
+    turnTimeMs: number;
 };
 
 type TurnTimerPayload = {
@@ -149,6 +150,7 @@ export class ServerRoom extends Room<RoomState> {
             hasStarted: this.hasStarted,
             createdAt: this.createdAt,
             inviteOnly: this.inviteOnly,
+            turnTimeMs: this.turnTimeMs,
         };
 
         void this.setMetadata(metadata).catch((err) => {
@@ -235,6 +237,15 @@ export class ServerRoom extends Room<RoomState> {
             turnDeadlineAt: this.turnDeadlineAt,
             serverTimeAt: Date.now(),
         };
+    }
+
+    private broadcastTurnTimer(payload: TurnTimerPayload | null) {
+        if (!payload) return;
+        try {
+            this.broadcast("turnTimer", payload);
+        } catch (err) {
+            this.logError("broadcast(turnTimer)", err, { payload });
+        }
     }
 
     private cancelTurnTimer() {
@@ -430,8 +441,9 @@ export class ServerRoom extends Room<RoomState> {
 
             // 建议用 setState，避免一些内部 patch/初始化边界问题
             this.state = new RoomState();
+            this.state.turnTimeMs = this.turnTimeMs;
 
-            this.logInfo("Room created", { options });
+            this.logInfo("Room created", { options, turnTimeMs: this.turnTimeMs });
 
             this.clock.setInterval(() => {
                 try {
@@ -581,7 +593,8 @@ export class ServerRoom extends Room<RoomState> {
             }
 
             if (this.hasStarted && playerOrder === this.turnPlayer) {
-                this.beginTurn("player left on active turn");
+                const turnTimer = this.beginTurn("player left on active turn");
+                this.broadcastTurnTimer(turnTimer);
             }
         } catch (err) {
             this.logError("onLeave", err, { client, consented });

@@ -1,4 +1,4 @@
-import {Schema, type, MapSchema, ArraySchema} from "@colyseus/schema";
+import { Schema, type, MapSchema, ArraySchema } from "@colyseus/schema";
 
 export class ServerBoardKey {
     playerId = 0;     // 0/1/2
@@ -20,6 +20,7 @@ export class PlayerState extends Schema {
 export class RoomState extends Schema {
     @type({ map: PlayerState }) playerStates = new MapSchema<PlayerState>();
     @type("int32") tick = 0;
+    @type("int32") turnTimeMs = 10000;
 }
 
 
