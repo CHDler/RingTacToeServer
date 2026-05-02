@@ -30,6 +30,23 @@ export default Arena({
             credentials: true,
         };
 
+        app.use((req, res, next) => {
+            const requestOrigin = req.headers.origin;
+            if (requestOrigin) {
+                res.header("Access-Control-Allow-Origin", requestOrigin);
+                res.header("Vary", "Origin");
+            } else {
+                res.header("Access-Control-Allow-Origin", "*");
+            }
+            res.header("Access-Control-Allow-Credentials", "true");
+            res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
+            res.header("Access-Control-Allow-Methods", "GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS");
+            if (req.method === "OPTIONS") {
+                res.sendStatus(204);
+                return;
+            }
+            next();
+        });
         app.use(cors(corsOptions));
         app.options("*", cors(corsOptions));
 
