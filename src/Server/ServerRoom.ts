@@ -220,6 +220,45 @@ export class ServerRoom extends Room<RoomState> {
         this.playernum = this.getSeatCount();
     }
 
+    private assignRandomPlayerOrders(forceDifferentFromCurrent = false) {
+        const seatEntries = this.getSeatEntries();
+        const previousOrderBySessionId = new Map<string, number>();
+        seatEntries.forEach((seat) => {
+            previousOrderBySessionId.set(seat.sessionId, seat.playerState.playerOrder);
+        });
+
+        const ids = seatEntries.map((seat) => seat.sessionId);
+        this.shuffleInPlace(ids);
+        if (
+            forceDifferentFromCurrent &&
+            ids.length > 1 &&
+            ids.every((sessionId, index) => previousOrderBySessionId.get(sessionId) === index)
+        ) {
+            const first = ids.shift();
+            if (first) {
+                ids.push(first);
+            }
+        }
+
+        for (let i = 0; i < ids.length; i++) {
+            const s = this.state.playerStates.get(ids[i]);
+            if (!s) {
+                continue;
+            }
+
+            s.playerOrder = i;
+            s.playerId = i;
+
+            if (this.aiControlledSessionIds.has(ids[i])) {
+                s.useWXName = false;
+                s.playerName = this.getAiName(s);
+            }
+        }
+
+        this.playernum = this.getSeatCount();
+        this.refreshAiOrdersFromState();
+    }
+
     private normalizeTurnTimeMs(value: any) {
         const raw = Number(value);
         if (!Number.isFinite(raw) || raw <= 0) {
@@ -1181,29 +1220,9 @@ export class ServerRoom extends Room<RoomState> {
     }
 
     assignRandomOrderAndStart() {
-        const ids = this.getSeatEntries().map((seat) => seat.sessionId);
-        this.shuffleInPlace(ids);
-
-        for (let i = 0; i < ids.length; i++) {
-            const s = this.state.playerStates.get(ids[i]);
-            if (s) {
-                s.playerOrder = i;
-                s.playerId = i;
-                if (this.aiControlledSessionIds.has(ids[i])) {
-                    s.useWXName = false;
-                    s.playerName = this.getAiName(s);
-                    continue;
-                }
-                if (!s.useWXName) {
-                    s.playerName = "玩家" + i.toString();
-                }
-            }
-        }
-
-        this.playernum = this.getSeatCount();
+        this.assignRandomPlayerOrders();
         this.turnPlayer = 0;
         this.hasStarted = true;
-        this.refreshAiOrdersFromState();
         this.updateRoomMetadata();
         this.lockStartedRoom();
         const turnTimer = this.beginTurn("game start");
@@ -1262,8 +1281,8 @@ export class ServerRoom extends Room<RoomState> {
         };
         this.turnPlayer = 0;
         this.leftRoomPlayers = [];
+        this.assignRandomPlayerOrders(true);
         this.hasStarted = true;
-        this.refreshAiOrdersFromState();
         this.updateRoomMetadata();
         this.lockStartedRoom();
 
