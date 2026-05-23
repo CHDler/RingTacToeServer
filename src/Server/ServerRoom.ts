@@ -93,6 +93,8 @@ export class ServerRoom extends Room<RoomState> {
     private pendingTurnTimerPlayer = -1;
     private pendingTurnTimerReason = "";
     private readonly turnTimerAnimationGraceMs = 2000;
+    private readonly clientMoveAnimWaitBeforeRotateMs = 2000;
+    private readonly clientMoveAnimRotatePerStepMs = 1000;
 
 
     public isFlowMode = false;
@@ -392,22 +394,24 @@ export class ServerRoom extends Room<RoomState> {
         return this.scheduleTurnTimerIfNeeded(reason);
     }
 
-    private scheduleTurnTimerAfterAnimation(reason: string) {
+    private scheduleTurnTimerAfterAnimation(reason: string, animationDelayMs = 0) {
         if (!this.hasStarted) return;
 
         const token = ++this.pendingTurnTimerStartToken;
         this.pendingTurnTimerPlayer = this.turnPlayer;
         this.pendingTurnTimerReason = reason;
+        const fallbackDelayMs = Math.max(0, Math.floor(animationDelayMs)) + this.turnTimerAnimationGraceMs;
 
         this.logInfo("Waiting for turn animation ready", {
             reason,
             turnPlayer: this.turnPlayer,
-            fallbackMs: this.turnTimerAnimationGraceMs,
+            animationDelayMs,
+            fallbackMs: fallbackDelayMs,
         });
 
         this.clock.setTimeout(() => {
             this.startPendingTurnTimer(token, "fallback");
-        }, this.turnTimerAnimationGraceMs);
+        }, fallbackDelayMs);
     }
 
     private startPendingTurnTimer(token: number, source: string) {
@@ -418,6 +422,22 @@ export class ServerRoom extends Room<RoomState> {
         const reason = this.pendingTurnTimerReason || "animation ready";
         const turnTimer = this.beginTurn(`${reason} (${source})`);
         this.broadcastTurnTimer(turnTimer);
+    }
+
+    private estimateClientMoveAnimationMs(move: any) {
+        if (!move) return 0;
+
+        const rotations = Array.isArray(move.rotateSteps)
+            ? move.rotateSteps
+            : [move.rotateStep];
+        const maxSteps = rotations.reduce((maxStep: number, rawStep: any) => {
+            const step = Math.abs(Math.floor(Number(rawStep) || 0));
+            return Math.max(maxStep, this.KEY_COUNT > 0 ? step % this.KEY_COUNT : step);
+        }, 0);
+
+        return maxSteps > 0
+            ? this.clientMoveAnimWaitBeforeRotateMs + maxSteps * this.clientMoveAnimRotatePerStepMs
+            : 0;
     }
 
     private runTurnTimeout(token: number, reason: string) {
@@ -1301,7 +1321,10 @@ export class ServerRoom extends Room<RoomState> {
 
         const endGamePayload = this.checkForEnd();
         if (!endGamePayload) {
-            this.scheduleTurnTimerAfterAnimation(`${options.actorLabel} move`);
+            this.scheduleTurnTimerAfterAnimation(
+                `${options.actorLabel} move`,
+                this.estimateClientMoveAnimationMs(this.currentMove),
+            );
         }
         const moveMsgToBroadcast = options.broadcastMoveMsg === undefined
             ? this.currentMove
