@@ -1348,8 +1348,8 @@ export class ServerRoom extends Room<RoomState> {
         this.hasStarted = true;
         this.updateRoomMetadata();
         this.lockStartedRoom();
-        const turnTimer = this.beginTurn("game start");
-        this.notifyClientsToStart(turnTimer);
+        this.scheduleTurnTimerAfterAnimation("game start");
+        this.notifyClientsToStart(null);
     }
 
     notifyClientsToStart(turnTimer: TurnTimerPayload | null = null) {
@@ -1409,7 +1409,8 @@ export class ServerRoom extends Room<RoomState> {
         this.updateRoomMetadata();
         this.lockStartedRoom();
 
-        return this.beginTurn("restart match");
+        this.scheduleTurnTimerAfterAnimation("restart match");
+        return null;
     }
 
     private onRestartMatch(client: Client, data: any) {
