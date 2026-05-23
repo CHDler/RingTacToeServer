@@ -89,6 +89,10 @@ export class ServerRoom extends Room<RoomState> {
     private turnTimerScheduleToken = 0;
     private turnDeadlineAt = 0;
     private pendingMovesByPlayerOrder = new Map<number, MoveMsg>();
+    private pendingTurnTimerStartToken = 0;
+    private pendingTurnTimerPlayer = -1;
+    private pendingTurnTimerReason = "";
+    private readonly turnTimerAnimationGraceMs = 2000;
 
 
     public isFlowMode = false;
@@ -293,6 +297,12 @@ export class ServerRoom extends Room<RoomState> {
         this.turnDeadlineAt = 0;
     }
 
+    private cancelPendingTurnTimerStart() {
+        this.pendingTurnTimerStartToken++;
+        this.pendingTurnTimerPlayer = -1;
+        this.pendingTurnTimerReason = "";
+    }
+
     private buildRandomServerMove(): MoveMsg | null {
         const candidates: Array<{ boardIndex: number; boardKeyIndex: number }> = [];
 
@@ -376,9 +386,38 @@ export class ServerRoom extends Room<RoomState> {
     }
 
     private beginTurn(reason: string): TurnTimerPayload | null {
+        this.cancelPendingTurnTimerStart();
         this.pendingMovesByPlayerOrder.delete(this.turnPlayer);
         this.scheduleAiTurnIfNeeded(reason);
         return this.scheduleTurnTimerIfNeeded(reason);
+    }
+
+    private scheduleTurnTimerAfterAnimation(reason: string) {
+        if (!this.hasStarted) return;
+
+        const token = ++this.pendingTurnTimerStartToken;
+        this.pendingTurnTimerPlayer = this.turnPlayer;
+        this.pendingTurnTimerReason = reason;
+
+        this.logInfo("Waiting for turn animation ready", {
+            reason,
+            turnPlayer: this.turnPlayer,
+            fallbackMs: this.turnTimerAnimationGraceMs,
+        });
+
+        this.clock.setTimeout(() => {
+            this.startPendingTurnTimer(token, "fallback");
+        }, this.turnTimerAnimationGraceMs);
+    }
+
+    private startPendingTurnTimer(token: number, source: string) {
+        if (token !== this.pendingTurnTimerStartToken) return;
+        if (!this.hasStarted) return;
+        if (this.pendingTurnTimerPlayer !== this.turnPlayer) return;
+
+        const reason = this.pendingTurnTimerReason || "animation ready";
+        const turnTimer = this.beginTurn(`${reason} (${source})`);
+        this.broadcastTurnTimer(turnTimer);
     }
 
     private runTurnTimeout(token: number, reason: string) {
@@ -546,6 +585,10 @@ export class ServerRoom extends Room<RoomState> {
             this.onMessage(
                 "previewMove",
                 this.safeMessageHandler<any>("previewMove", (client, data) => this.onPreviewMove(client, data))
+            );
+            this.onMessage(
+                "turnAnimationReady",
+                this.safeMessageHandler<any>("turnAnimationReady", (client, data) => this.onTurnAnimationReady(client, data))
             );
             this.onMessage(
                 "restartMatch",
@@ -985,6 +1028,25 @@ export class ServerRoom extends Room<RoomState> {
         this.pendingMovesByPlayerOrder.set(player.playerOrder, this.cloneMove(move));
     }
 
+    private onTurnAnimationReady(client: Client, data: any) {
+        const player = this.state.playerStates.get(client.sessionId);
+        if (!this.hasStarted || !player) return;
+        if (player.playerOrder !== this.turnPlayer) return;
+        if (player.playerOrder !== this.pendingTurnTimerPlayer) return;
+
+        const requestedTurnPlayer = Number(data?.turnPlayer);
+        if (Number.isFinite(requestedTurnPlayer) && Math.floor(requestedTurnPlayer) !== this.turnPlayer) {
+            return;
+        }
+
+        this.logInfo("Turn animation ready", {
+            client,
+            turnPlayer: this.turnPlayer,
+            playerId: player.playerId,
+        });
+        this.startPendingTurnTimer(this.pendingTurnTimerStartToken, "client-ready");
+    }
+
     private processMove(
         player: PlayerState | undefined,
         data: MoveMsg | null | undefined,
@@ -1238,7 +1300,9 @@ export class ServerRoom extends Room<RoomState> {
         this.turnPlayer = (this.turnPlayer + 1) % this.playerToStart;
 
         const endGamePayload = this.checkForEnd();
-        const turnTimer = endGamePayload ? null : this.beginTurn(`${options.actorLabel} move`);
+        if (!endGamePayload) {
+            this.scheduleTurnTimerAfterAnimation(`${options.actorLabel} move`);
+        }
         const moveMsgToBroadcast = options.broadcastMoveMsg === undefined
             ? this.currentMove
             : options.broadcastMoveMsg;
@@ -1251,9 +1315,6 @@ export class ServerRoom extends Room<RoomState> {
 
             if (moveMsgToBroadcast != null) {
                 payload.moveMsg = moveMsgToBroadcast;
-            }
-            if (turnTimer) {
-                payload.turnTimer = turnTimer;
             }
 
             this.broadcast("moveAccepted", payload);
