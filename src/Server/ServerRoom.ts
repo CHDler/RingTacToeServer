@@ -88,6 +88,7 @@ export class ServerRoom extends Room<RoomState> {
     private turnTimeMs = 10000;
     private turnTimerScheduleToken = 0;
     private turnDeadlineAt = 0;
+    private pendingMovesByPlayerOrder = new Map<number, MoveMsg>();
 
 
     public isFlowMode = false;
@@ -317,6 +318,27 @@ export class ServerRoom extends Room<RoomState> {
         };
     }
 
+    private hasMovePlacement(move: MoveMsg | null | undefined): move is MoveMsg {
+        return !!move
+            && Number.isFinite(move.boardIndex)
+            && Number.isFinite(move.boardKeyIndex)
+            && move.boardIndex >= 0
+            && move.boardKeyIndex >= 0;
+    }
+
+    private cloneMove(move: MoveMsg): MoveMsg {
+        const rotateStep = Number(move.rotateStep);
+        const rotateDirection = Number(move.rotateDirection);
+        const rotateBoardIndex = Number(move.rotateBoardIndex);
+        return {
+            boardIndex: Math.floor(Number(move.boardIndex)),
+            boardKeyIndex: Math.floor(Number(move.boardKeyIndex)),
+            rotateStep: Number.isFinite(rotateStep) ? Math.floor(rotateStep) : 0,
+            rotateDirection: Number.isFinite(rotateDirection) ? Math.floor(rotateDirection) : 0,
+            rotateBoardIndex: Number.isFinite(rotateBoardIndex) ? Math.floor(rotateBoardIndex) : -1,
+        };
+    }
+
     private scheduleTurnTimerIfNeeded(reason: string): TurnTimerPayload | null {
         if (!this.hasStarted) return null;
 
@@ -354,6 +376,7 @@ export class ServerRoom extends Room<RoomState> {
     }
 
     private beginTurn(reason: string): TurnTimerPayload | null {
+        this.pendingMovesByPlayerOrder.delete(this.turnPlayer);
         this.scheduleAiTurnIfNeeded(reason);
         return this.scheduleTurnTimerIfNeeded(reason);
     }
@@ -369,6 +392,30 @@ export class ServerRoom extends Room<RoomState> {
                 turnPlayer: this.turnPlayer,
             });
             return;
+        }
+
+        const pendingMove = this.pendingMovesByPlayerOrder.get(activeSeat.playerState.playerOrder);
+        if (this.hasMovePlacement(pendingMove)) {
+            this.logInfo("Turn timeout: applying pending player move", {
+                reason,
+                turnPlayer: this.turnPlayer,
+                playerId: activeSeat.playerState.playerId,
+                pendingMove,
+            });
+
+            try {
+                if (this.processMove(activeSeat.playerState, pendingMove, {
+                    actorLabel: "timeout-pending",
+                    broadcastMoveMsg: pendingMove,
+                })) {
+                    return;
+                }
+            } catch (err) {
+                this.logError("runTurnTimeout pending move", err, {
+                    turnPlayer: this.turnPlayer,
+                    pendingMove,
+                });
+            }
         }
 
         const timeoutMove = this.buildRandomServerMove();
@@ -495,6 +542,10 @@ export class ServerRoom extends Room<RoomState> {
             this.onMessage(
                 "confirmMove",
                 this.safeMessageHandler<any>("confirmMove", (client, data) => this.onMove(client, data))
+            );
+            this.onMessage(
+                "previewMove",
+                this.safeMessageHandler<any>("previewMove", (client, data) => this.onPreviewMove(client, data))
             );
             this.onMessage(
                 "restartMatch",
@@ -921,6 +972,17 @@ export class ServerRoom extends Room<RoomState> {
                 client.send("serverError", { where: "onMove", errorId: eid });
             } catch { }
         }
+    }
+
+    private onPreviewMove(client: Client, data: any) {
+        const player = this.state.playerStates.get(client.sessionId);
+        if (!this.hasStarted || !player) return;
+        if (player.playerOrder !== this.turnPlayer) return;
+
+        const move = data as MoveMsg;
+        if (!this.hasMovePlacement(move)) return;
+
+        this.pendingMovesByPlayerOrder.set(player.playerOrder, this.cloneMove(move));
     }
 
     private processMove(
